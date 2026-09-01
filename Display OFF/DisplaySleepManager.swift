@@ -51,6 +51,15 @@ struct DisplaySleepManager {
         _ = try await run("/usr/bin/pmset", arguments: ["displaysleepnow"], requiresAdmin: false)
     }
 
+    func scheduleDisplaySleepNow(after seconds: TimeInterval = 2) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep \(seconds); /usr/bin/pmset displaysleepnow"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
+
     private func getCurrentMinutes(for setting: PowerSetting) async throws -> Int? {
         let output = try await run("/usr/bin/pmset", arguments: ["-g", "custom"], requiresAdmin: false)
         return try parseMinutes(from: output, setting: setting)

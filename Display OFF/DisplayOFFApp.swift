@@ -165,13 +165,8 @@ struct DisplayOFFApp: App {
 
     @MainActor
     private func sleepDisplayNow() async {
-        isLoading = true
-        defer {
-            isLoading = false
-        }
-
         do {
-            try await displaySleepManager.sleepDisplayNow()
+            try displaySleepManager.scheduleDisplaySleepNow()
         } catch {
             showError("今すぐディスプレイをオフにできませんでした", error: error)
         }
