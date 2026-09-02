@@ -59,8 +59,10 @@ struct DisplaySleepManager {
         var inputSnapshot = ExplicitInputSnapshot()
 
         for attempt in 1...3 {
-            logger.info("Requesting display sleep (attempt \(attempt))")
+            try Task.checkCancellation()
+            logger.info("Requesting display sleep (attempt \(attempt, privacy: .public))")
             _ = try await run("/usr/bin/pmset", arguments: ["displaysleepnow"], requiresAdmin: false)
+            try Task.checkCancellation()
 
             guard try await waitForMainDisplay(asleep: true, timeout: 2) else {
                 if inputSnapshot.hasChanged {
@@ -68,12 +70,12 @@ struct DisplaySleepManager {
                     return
                 }
 
-                logger.notice("Display did not enter sleep on attempt \(attempt)")
+                logger.notice("Display did not enter sleep on attempt \(attempt, privacy: .public)")
                 continue
             }
 
             guard try await waitForMainDisplay(asleep: false, timeout: 6) else {
-                logger.info("Display remained asleep after attempt \(attempt)")
+                logger.info("Display remained asleep after attempt \(attempt, privacy: .public)")
                 return
             }
 
@@ -84,7 +86,7 @@ struct DisplaySleepManager {
                 return
             }
 
-            logger.notice("Display woke without explicit input; retrying")
+            logger.notice("Display woke without explicit input after attempt \(attempt, privacy: .public); retrying")
             inputSnapshot = ExplicitInputSnapshot()
             try await Task.sleep(nanoseconds: 600_000_000)
         }
@@ -97,6 +99,7 @@ struct DisplaySleepManager {
         let deadline = ProcessInfo.processInfo.systemUptime + timeout
 
         repeat {
+            try Task.checkCancellation()
             let isAsleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
             if isAsleep == expectedState {
                 return true
