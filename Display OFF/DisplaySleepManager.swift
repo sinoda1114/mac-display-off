@@ -245,6 +245,8 @@ struct DisplaySleepManager {
 }
 
 private struct ExplicitInputSnapshot {
+    private static let systemDefinedEventType = CGEventType(rawValue: 14)!
+
     private static let eventTypes: [CGEventType] = [
         .leftMouseDown,
         .leftMouseUp,
@@ -256,6 +258,7 @@ private struct ExplicitInputSnapshot {
         .keyUp,
         .flagsChanged,
         .scrollWheel,
+        systemDefinedEventType,
         .otherMouseDown,
         .otherMouseUp,
         .otherMouseDragged
