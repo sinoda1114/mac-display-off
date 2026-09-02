@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import OSLog
 
 enum DisplaySleepError: LocalizedError {
     case commandFailed(command: String, message: String)
@@ -6,6 +8,7 @@ enum DisplaySleepError: LocalizedError {
     case invalidMinutes(Int)
     case invalidUserName(String)
     case parseFailed
+    case displayDidNotStayAsleep
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +22,8 @@ enum DisplaySleepError: LocalizedError {
             return "sudoersに登録できないユーザー名です: \(userName)"
         case .parseFailed:
             return "現在の設定を取得できませんでした"
+        case .displayDidNotStayAsleep:
+            return "周辺機器からの入力が続いているため、ディスプレイをオフのまま維持できませんでした"
         }
     }
 }
@@ -30,6 +35,7 @@ struct DisplaySleepManager {
     }
 
     private let allowedMinutes: Set<Int> = [0, 1, 5, 10, 30, 60, 120]
+    private let logger = Logger(subsystem: "com.sinoda.DisplayOFF", category: "DisplaySleep")
 
     func getCurrentDisplaySleepMinutes() async throws -> Int? {
         try await getCurrentMinutes(for: .displaySleep)
@@ -48,16 +54,61 @@ struct DisplaySleepManager {
     }
 
     func sleepDisplayNow() async throws {
-        _ = try await run("/usr/bin/pmset", arguments: ["displaysleepnow"], requiresAdmin: false)
+        // Let the menu click finish before taking the input snapshot used to classify a wake.
+        try await Task.sleep(nanoseconds: 800_000_000)
+        var inputSnapshot = ExplicitInputSnapshot()
+
+        for attempt in 1...3 {
+            try Task.checkCancellation()
+            logger.info("Requesting display sleep (attempt \(attempt, privacy: .public))")
+            _ = try await run("/usr/bin/pmset", arguments: ["displaysleepnow"], requiresAdmin: false)
+            try Task.checkCancellation()
+
+            guard try await waitForMainDisplay(asleep: true, timeout: 2) else {
+                if inputSnapshot.hasChanged {
+                    logger.info("Display sleep was interrupted by explicit user input")
+                    return
+                }
+
+                logger.notice("Display did not enter sleep on attempt \(attempt, privacy: .public)")
+                continue
+            }
+
+            guard try await waitForMainDisplay(asleep: false, timeout: 6) else {
+                logger.info("Display remained asleep after attempt \(attempt, privacy: .public)")
+                return
+            }
+
+            // Give a click or key event that woke the display time to reach WindowServer.
+            try await Task.sleep(nanoseconds: 350_000_000)
+            if inputSnapshot.hasChanged {
+                logger.info("Display wake accepted as explicit user input")
+                return
+            }
+
+            logger.notice("Display woke without explicit input after attempt \(attempt, privacy: .public); retrying")
+            inputSnapshot = ExplicitInputSnapshot()
+            try await Task.sleep(nanoseconds: 600_000_000)
+        }
+
+        logger.error("Display could not remain asleep after three attempts")
+        throw DisplaySleepError.displayDidNotStayAsleep
     }
 
-    func scheduleDisplaySleepNow(after seconds: TimeInterval = 2) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "sleep \(seconds); /usr/bin/pmset displaysleepnow"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
+    private func waitForMainDisplay(asleep expectedState: Bool, timeout: TimeInterval) async throws -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+
+        repeat {
+            try Task.checkCancellation()
+            let isAsleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
+            if isAsleep == expectedState {
+                return true
+            }
+
+            try await Task.sleep(nanoseconds: 100_000_000)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+
+        return (CGDisplayIsAsleep(CGMainDisplayID()) != 0) == expectedState
     }
 
     private func getCurrentMinutes(for setting: PowerSetting) async throws -> Int? {
@@ -193,5 +244,40 @@ struct DisplaySleepManager {
             .replacingOccurrences(of: "\"", with: "\\\"")
 
         return "\"\(escaped)\""
+    }
+}
+
+private struct ExplicitInputSnapshot {
+    private static let systemDefinedEventType = CGEventType(rawValue: 14)!
+
+    private static let eventTypes: [CGEventType] = [
+        .leftMouseDown,
+        .leftMouseUp,
+        .rightMouseDown,
+        .rightMouseUp,
+        .leftMouseDragged,
+        .rightMouseDragged,
+        .keyDown,
+        .keyUp,
+        .flagsChanged,
+        .scrollWheel,
+        systemDefinedEventType,
+        .otherMouseDown,
+        .otherMouseUp,
+        .otherMouseDragged
+    ]
+
+    private let counters: [UInt32]
+
+    init() {
+        counters = Self.eventTypes.map {
+            CGEventSource.counterForEventType(.combinedSessionState, eventType: $0)
+        }
+    }
+
+    var hasChanged: Bool {
+        zip(Self.eventTypes, counters).contains { eventType, counter in
+            CGEventSource.counterForEventType(.combinedSessionState, eventType: eventType) != counter
+        }
     }
 }
